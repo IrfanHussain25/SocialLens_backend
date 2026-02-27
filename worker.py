@@ -4,6 +4,8 @@ import os
 import time
 import uuid
 import yt_dlp
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
 # 1. Load the credentials from the .env file
@@ -18,6 +20,22 @@ REGION = os.getenv('AWS_DEFAULT_REGION')
 sqs = boto3.client('sqs', region_name=REGION)
 s3 = boto3.client('s3', region_name=REGION)
 
+# --- DUMMY SERVER FOR RENDER ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Worker is alive and polling SQS!")
+
+def run_dummy_server():
+    # Render assigns a port dynamically via the PORT environment variable
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    print(f"Dummy health-check server running on port {port}")
+    server.serve_forever()
+# -------------------------------
+
 def process_video(video_url, file_name):
     """Universal downloader for both YouTube and Instagram using yt-dlp"""
     print(f"Downloading video via yt-dlp...")
@@ -26,6 +44,9 @@ def process_video(video_url, file_name):
         'format': 'best[ext=mp4]/best', 
         'quiet': True,
         'no_warnings': True,
+        # Uncomment the line below if YouTube throws a 403 error due to Render's datacenter IP
+        # 'cookiefile': 'cookies.txt', 
+        # 'extractor_args': {'youtube': ['player_client=default,-android_sdkless']} 
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
@@ -70,4 +91,8 @@ def poll_queue():
             time.sleep(5)
 
 if __name__ == "__main__":
+    # 2. Start the dummy server in a background thread so it doesn't block the worker
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    
+    # 3. Start your actual SQS polling loop
     poll_queue()
